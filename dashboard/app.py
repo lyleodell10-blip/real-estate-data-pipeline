@@ -1,264 +1,226 @@
 # dashboard/app.py
-
 import os
-import dash
-from dash import dcc, html, Input, Output, State
+import base64
 import pandas as pd
-import numpy as np
-import plotly.express as px
-import io, base64
+from io import StringIO
+import plotly.graph_objs as go
+from dash import Dash, dcc, html, Input, Output, State
 
-# ---------------------------
+# ----------------------
 # Initialize app
-# ---------------------------
-app = dash.Dash(__name__)
-server = app.server  # <-- Required for Render/Gunicorn
+# ----------------------
+app = Dash(__name__)
+server = app.server  # WSGI callable for Render
 
-# ---------------------------
-# Default sample data
-# ---------------------------
-np.random.seed(42)
+# Sample initial dataset
 df = pd.DataFrame({
-    "Location": np.random.choice(["A", "B", "C", "D"], size=200),
-    "Price": np.random.normal(300_000, 50_000, size=200).astype(int),
-    "Bedrooms": np.random.randint(1, 5, size=200),
-    "Bathrooms": np.random.randint(1, 4, size=200),
-    "SquareFeet": np.random.randint(600, 3000, size=200)
+    'Price': [200000, 250000, 300000, 350000, 400000],
+    'Latitude': [34.05, 34.07, 34.06, 34.08, 34.09],
+    'Longitude': [-118.25, -118.24, -118.26, -118.23, -118.22],
+    'PropertyType': ['House','Condo','House','Condo','House'],
+    'Bedrooms': [3,2,4,2,5]
 })
 
-# ---------------------------
-# Theme styles
-# ---------------------------
-THEMES = {
-    "light": {
-        "background": "#f9f9f9",
-        "card_bg": "#ffffff",
-        "card_border": "#ccc",
-        "text_color": "#000"
-    },
-    "dark": {
-        "background": "#1e1e1e",
-        "card_bg": "#2e2e2e",
-        "card_border": "#555",
-        "text_color": "#f9f9f9"
-    }
-}
+# ----------------------
+# Layout
+# ----------------------
+app.layout = html.Div([
+    # Header
+    html.Div([
+        html.H1("AI Real Estate Valuation Dashboard", style={'margin':'0', 'fontSize':'24px'}),
+        html.Div([
+            html.Label("Theme:"),
+            dcc.RadioItems(
+                id="theme-radio",
+                options=[{"label": "Light", "value": "light"}, {"label": "Dark", "value": "dark"}],
+                value="light",
+                labelStyle={"display": "inline-block", "margin-right": "10px"}
+            )
+        ], style={'display':'inline-block', 'margin-left':'20px'}),
+        html.Div([
+            dcc.Upload(
+                id='upload-data',
+                children=html.Div(['Drag and Drop or ', html.A('Select CSV Files')]),
+                style={'display':'inline-block','padding':'6px 12px','margin-left':'20px',
+                       'borderWidth': '1px','borderStyle': 'dashed','borderRadius': '5px','cursor':'pointer'},
+                multiple=True
+            )
+        ], style={'display':'inline-block', 'margin-left':'20px'}),
+        html.Div([
+            html.Button("Download Filtered CSV", id="download-btn", n_clicks=0,
+                        style={'padding':'6px 12px', 'margin-left':'20px', 'cursor':'pointer'}),
+            dcc.Download(id="download-data")
+        ], style={'display':'inline-block'})
+    ], className='sticky-header'),
 
-# ---------------------------
-# Helper: Parse uploaded CSVs
-# ---------------------------
+    # Main content: filters + dashboard
+    html.Div([
+        # Filter panel
+        html.Div([
+            html.H4("Filters", style={'margin-bottom':'10px'}),
+            
+            html.Label("Price Range"),
+            dcc.RangeSlider(id='price-slider', min=df['Price'].min(), max=df['Price'].max(),
+                            step=1000, value=[df['Price'].min(), df['Price'].max()],
+                            tooltip={"placement": "bottom", "always_visible": True}),
+            
+            html.Label("Latitude Range", style={'margin-top':'20px'}),
+            dcc.RangeSlider(id='lat-slider', min=df['Latitude'].min(), max=df['Latitude'].max(),
+                            step=0.001, value=[df['Latitude'].min(), df['Latitude'].max()],
+                            tooltip={"placement": "bottom", "always_visible": True}),
+            
+            html.Label("Longitude Range", style={'margin-top':'20px'}),
+            dcc.RangeSlider(id='lon-slider', min=df['Longitude'].min(), max=df['Longitude'].max(),
+                            step=0.001, value=[df['Longitude'].min(), df['Longitude'].max()],
+                            tooltip={"placement": "bottom", "always_visible": True}),
+            
+            html.Label("Property Type", style={'margin-top':'20px'}),
+            dcc.Dropdown(
+                id='property-type-dropdown',
+                options=[{'label': t, 'value': t} for t in df['PropertyType'].unique()],
+                multi=True,
+                placeholder="Select property type"
+            ),
+            
+            html.Label("Bedrooms", style={'margin-top':'20px'}),
+            dcc.Dropdown(
+                id='bedrooms-dropdown',
+                options=[{'label': str(b), 'value': b} for b in sorted(df['Bedrooms'].unique())],
+                multi=True,
+                placeholder="Select number of bedrooms"
+            ),
+        ], className='filter-panel'),
+
+        # Dashboard row
+        html.Div([
+            html.Div(dcc.Graph(id='scatter-plot'), className='dashboard-col'),
+            html.Div(dcc.Graph(id='price-histogram'), className='dashboard-col'),
+            html.Div([
+                html.Div(id='stats-cards', style={'marginBottom':'20px'}),
+                html.H3("Prediction History"),
+                dcc.Graph(id='prediction-history-graph')
+            ], className='dashboard-col')
+        ], className='dashboard-row')
+    ], className='main-container', style={'display':'flex', 'flexWrap':'wrap', 'gap':'20px'}),
+
+    # Hidden storage for prediction history
+    dcc.Store(id='prediction-history', data=[])
+])
+
+# ----------------------
+# CSV parser
+# ----------------------
 def parse_contents(contents, filename):
     content_type, content_string = contents.split(',')
     decoded = base64.b64decode(content_string)
     try:
         if filename.endswith('.csv'):
-            return pd.read_csv(io.StringIO(decoded.decode('utf-8')))
+            return pd.read_csv(StringIO(decoded.decode('utf-8')))
         else:
-            return None
+            return pd.DataFrame()
     except Exception as e:
-        print(f"Error processing {filename}: {e}")
-        return None
+        print(f"Error parsing {filename}: {e}")
+        return pd.DataFrame()
 
-# ---------------------------
-# Layout
-# ---------------------------
-app.layout = html.Div([
-    html.H1("AI Real Estate Valuation Dashboard", style={'textAlign': 'center'}),
-    
-    # Upload CSVs
-    dcc.Upload(
-        id='upload-data',
-        children=html.Div([
-            'Drag and Drop or ',
-            html.A('Select CSV Files')
-        ]),
-        style={
-            'width': '100%',
-            'height': '60px',
-            'lineHeight': '60px',
-            'borderWidth': '1px',
-            'borderStyle': 'dashed',
-            'borderRadius': '5px',
-            'textAlign': 'center',
-            'margin-bottom': '20px'
-        },
-        multiple=True
-    ),
-    dcc.Store(id='uploaded-data', data=[]),
-
-    html.Div([
-        # Controls
-        html.Div([
-            # Theme toggle
-            html.Div([
-                html.Label("Theme:"),
-                dcc.RadioItems(
-                    id="theme-radio",
-                    options=[
-                        {"label": "Light", "value": "light"},
-                        {"label": "Dark", "value": "dark"}
-                    ],
-                    value="light",
-                    labelStyle={"display": "inline-block", "margin-right": "10px"}
-                )
-            ], style={"margin-bottom": "20px"}),
-
-            html.Label("Select Location"),
-            dcc.Dropdown(
-                id='location-dropdown',
-                options=[{"label": loc, "value": loc} for loc in sorted(df["Location"].unique())],
-                value="A",
-                clearable=False
-            ),
-            html.Label("Bedrooms"),
-            dcc.Slider(id='bed-slider', min=1, max=4, step=1, value=2,
-                       marks={i: str(i) for i in range(1,5)}),
-            html.Label("Bathrooms"),
-            dcc.Slider(id='bath-slider', min=1, max=3, step=1, value=1,
-                       marks={i: str(i) for i in range(1,4)}),
-            html.Label("Square Feet"),
-            dcc.Slider(id='sqft-slider', min=600, max=3000, step=100, value=1500,
-                       marks={i: str(i) for i in range(600,3001,500)}),
-            html.Button("Download Snapshot", id="download-btn", style={'margin-top':'20px'}),
-            dcc.Download(id="download-data")
-        ], style={'width': '25%', 'display': 'inline-block', 'verticalAlign': 'top', 'padding': '20px', 
-                  'borderRadius':'8px', 'boxShadow':'2px 2px 10px #ccc'}),
-
-        # Charts and stats
-        html.Div([
-            html.Div([
-                dcc.Graph(id='scatter-plot', style={'display':'inline-block', 'width':'49%'}),
-                dcc.Graph(id='price-histogram', style={'display':'inline-block', 'width':'49%'})
-            ], style={'display':'flex', 'flexWrap':'wrap'}),
-            html.Div(id='stats-cards', style={'padding': '10px', 'display':'flex', 'flexWrap':'wrap'})
-        ], style={'width': '70%', 'display': 'inline-block', 'padding': '20px'})
-    ])
-], id='main-div')
-
-# ---------------------------
-# Callbacks
-# ---------------------------
-@app.callback(
-    Output('uploaded-data', 'data'),
-    Input('upload-data', 'contents'),
-    State('upload-data', 'filename'),
-    State('uploaded-data', 'data'),
-    prevent_initial_call=True
-)
-def update_uploaded_data(contents_list, filenames, existing_data):
-    if contents_list is None:
-        return existing_data
-    for contents, filename in zip(contents_list, filenames):
-        df_uploaded = parse_contents(contents, filename)
-        if df_uploaded is not None:
-            existing_data.append(df_uploaded.to_dict('records'))
-    return existing_data
-
+# ----------------------
+# Dashboard callback
+# ----------------------
 @app.callback(
     Output('scatter-plot', 'figure'),
     Output('price-histogram', 'figure'),
     Output('stats-cards', 'children'),
-    Output('main-div', 'style'),
-    Input('location-dropdown', 'value'),
-    Input('bed-slider', 'value'),
-    Input('bath-slider', 'value'),
-    Input('sqft-slider', 'value'),
-    Input('uploaded-data', 'data'),
-    Input('theme-radio', 'value')
+    Output('prediction-history', 'data'),
+    Input('upload-data', 'contents'),
+    Input('upload-data', 'filename'),
+    Input('theme-radio', 'value'),
+    Input('price-slider', 'value'),
+    Input('lat-slider', 'value'),
+    Input('lon-slider', 'value'),
+    Input('property-type-dropdown', 'value'),
+    Input('bedrooms-dropdown', 'value'),
+    State('prediction-history', 'data')
 )
-def update_dashboard(location, beds, baths, sqft, uploaded_data, theme):
-    # Merge default df with uploaded data
-    combined_df = df.copy()
-    if uploaded_data:
-        for data in uploaded_data:
-            combined_df = pd.concat([combined_df, pd.DataFrame(data)], ignore_index=True)
+def update_dashboard(contents, filenames, theme, price_range, lat_range, lon_range, property_types, bedrooms, history):
+    global df
+    # Append uploaded CSVs
+    if contents:
+        df_list = [parse_contents(c, f) for c, f in zip(contents, filenames)]
+        uploaded_df = pd.concat(df_list, ignore_index=True)
+        df = pd.concat([df, uploaded_df], ignore_index=True)
 
-    # Filter
-    filtered = combined_df[
-        (combined_df["Location"] == location) &
-        (combined_df["Bedrooms"] == beds) &
-        (combined_df["Bathrooms"] == baths)
+    # Filter dataset
+    filtered_df = df[
+        (df['Price'] >= price_range[0]) & (df['Price'] <= price_range[1]) &
+        (df['Latitude'] >= lat_range[0]) & (df['Latitude'] <= lat_range[1]) &
+        (df['Longitude'] >= lon_range[0]) & (df['Longitude'] <= lon_range[1])
     ]
+    if property_types:
+        filtered_df = filtered_df[filtered_df['PropertyType'].isin(property_types)]
+    if bedrooms:
+        filtered_df = filtered_df[filtered_df['Bedrooms'].isin(bedrooms)]
 
-    # Mock predicted price
-    predicted_price = int(200_000 + beds*50_000 + baths*30_000 + sqft*100)
+    # Dummy prediction
+    predicted_price = int(filtered_df['Price'].mean()) if not filtered_df.empty else 0
+    avg_price = int(filtered_df['Price'].mean()) if not filtered_df.empty else 0
+    max_price = int(filtered_df['Price'].max()) if not filtered_df.empty else 0
+    min_price = int(filtered_df['Price'].min()) if not filtered_df.empty else 0
 
-    # Scatter plot
-    scatter_fig = px.scatter(
-        filtered, x="SquareFeet", y="Price",
-        color="Bedrooms", size="Bathrooms",
-        title=f"Scatter Plot for {location}"
-    )
-    scatter_fig.add_hline(y=predicted_price, line_dash="dash", line_color="red",
-                          annotation_text="Predicted Price", annotation_position="top left")
-    scatter_fig.update_layout(plot_bgcolor=THEMES[theme]['background'], paper_bgcolor=THEMES[theme]['background'],
-                              font_color=THEMES[theme]['text_color'])
-
-    # Histogram
-    hist_fig = px.histogram(filtered, x="Price", nbins=20, title="Price Distribution")
-    hist_fig.add_vline(x=predicted_price, line_dash="dash", line_color="red",
-                       annotation_text="Predicted Price", annotation_position="top left")
-    hist_fig.update_layout(plot_bgcolor=THEMES[theme]['background'], paper_bgcolor=THEMES[theme]['background'],
-                           font_color=THEMES[theme]['text_color'])
+    # Update prediction history
+    history.append({'time': str(pd.Timestamp.now()), 'price': predicted_price})
+    if len(history) > 10:
+        history = history[-10:]
 
     # Stats cards
-    avg_price = filtered["Price"].mean() if not filtered.empty else 0
-    max_price = filtered["Price"].max() if not filtered.empty else 0
-    min_price = filtered["Price"].min() if not filtered.empty else 0
-
-    style = THEMES[theme]
     cards = html.Div([
-        html.Div(f"Predicted Price: ${predicted_price:,}", 
-                 style={'padding':'15px','border':'1px solid '+style['card_border'],
-                        'margin':'5px','borderRadius':'8px','backgroundColor':style['card_bg'],
-                        'color': style['text_color'],'transition':'0.3s', 'cursor':'pointer'}),
-        html.Div(f"Avg Price: ${avg_price:,.0f}", 
-                 style={'padding':'15px','border':'1px solid '+style['card_border'],
-                        'margin':'5px','borderRadius':'8px','backgroundColor':style['card_bg'],
-                        'color': style['text_color'],'transition':'0.3s', 'cursor':'pointer'}),
-        html.Div(f"Max Price: ${max_price:,}", 
-                 style={'padding':'15px','border':'1px solid '+style['card_border'],
-                        'margin':'5px','borderRadius':'8px','backgroundColor':style['card_bg'],
-                        'color': style['text_color'],'transition':'0.3s', 'cursor':'pointer'}),
-        html.Div(f"Min Price: ${min_price:,}", 
-                 style={'padding':'15px','border':'1px solid '+style['card_border'],
-                        'margin':'5px','borderRadius':'8px','backgroundColor':style['card_bg'],
-                        'color': style['text_color'],'transition':'0.3s', 'cursor':'pointer'}),
-    ], style={'display':'flex','flexWrap':'wrap'})
+        html.Div(f"Predicted Price: ${predicted_price:,}", className="stat-card"),
+        html.Div(f"Avg Price: ${avg_price:,}", className="stat-card"),
+        html.Div(f"Max Price: ${max_price:,}", className="stat-card"),
+        html.Div(f"Min Price: ${min_price:,}", className="stat-card")
+    ], style={'display':'flex','flexWrap':'wrap','gap':'10px'})
 
-    # Apply background color to main div
-    main_style = {'backgroundColor': style['background'], 'minHeight': '100vh', 'padding':'10px'}
+    # Scatter plot with map overlay
+    scatter_fig = go.Figure(go.Scattermapbox(
+        lat=filtered_df['Latitude'],
+        lon=filtered_df['Longitude'],
+        mode='markers',
+        marker=go.scattermapbox.Marker(size=12, color='blue'),
+        text=filtered_df.apply(lambda r: f"Price: ${r['Price']}\nBedrooms: {r['Bedrooms']}\nType: {r['PropertyType']}", axis=1)
+    ))
+    scatter_fig.update_layout(
+        mapbox_style="open-street-map",
+        mapbox_zoom=10,
+        mapbox_center={"lat": filtered_df['Latitude'].mean() if not filtered_df.empty else 34.05,
+                       "lon": filtered_df['Longitude'].mean() if not filtered_df.empty else -118.25},
+        margin={"l":0,"r":0,"t":30,"b":0},
+        title="Property Locations (Map Overlay)"
+    )
 
-    return scatter_fig, hist_fig, cards, main_style
+    # Histogram
+    hist_fig = go.Figure(go.Histogram(x=filtered_df['Price'], nbinsx=20, name='Price'))
+    hist_fig.add_trace(go.Scatter(
+        x=[predicted_price, predicted_price],
+        y=[0, filtered_df['Price'].value_counts().max() if not filtered_df.empty else 0],
+        mode='lines', line=dict(color='red', width=2), name='Predicted Price'
+    ))
+    hist_fig.update_layout(title="Price Distribution", transition={'duration':500,'easing':'cubic-in-out'})
 
-# ---------------------------
-# Download CSV callback
-# ---------------------------
+    return scatter_fig, hist_fig, cards, history
+
+# ----------------------
+# Download callback
+# ----------------------
 @app.callback(
     Output("download-data", "data"),
     Input("download-btn", "n_clicks"),
-    State('location-dropdown', 'value'),
-    State('bed-slider', 'value'),
-    State('bath-slider', 'value'),
-    State('sqft-slider', 'value'),
-    State('uploaded-data', 'data'),
     prevent_initial_call=True
 )
-def download_snapshot(n_clicks, location, beds, baths, sqft, uploaded_data):
-    combined_df = df.copy()
-    if uploaded_data:
-        for data in uploaded_data:
-            combined_df = pd.concat([combined_df, pd.DataFrame(data)], ignore_index=True)
-    filtered = combined_df[
-        (combined_df["Location"] == location) &
-        (combined_df["Bedrooms"] == beds) &
-        (combined_df["Bathrooms"] == baths)
-    ]
-    return dcc.send_data_frame(filtered.to_csv, f"{location}_snapshot.csv")
+def download_filtered(n_clicks):
+    global df
+    return dcc.send_data_frame(df.to_csv, "filtered_real_estate_data.csv", index=False)
 
-# ---------------------------
-# Main
-# ---------------------------
+# ----------------------
+# Run server
+# ----------------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8050))
     app.run_server(host="0.0.0.0", port=port, debug=True)
