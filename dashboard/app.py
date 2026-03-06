@@ -1,226 +1,218 @@
-# dashboard/app.py
-import os
-import base64
+import dash
+from dash import html, dcc, Input, Output, State
+import dash_bootstrap_components as dbc
 import pandas as pd
-from io import StringIO
-import plotly.graph_objs as go
-from dash import Dash, dcc, html, Input, Output, State
+import plotly.express as px
+import io
+import base64
 
-# ----------------------
-# Initialize app
-# ----------------------
-app = Dash(__name__)
-server = app.server  # WSGI callable for Render
+# --- App Setup ---
+app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
+server = app.server
 
-# Sample initial dataset
-df = pd.DataFrame({
-    'Price': [200000, 250000, 300000, 350000, 400000],
-    'Latitude': [34.05, 34.07, 34.06, 34.08, 34.09],
-    'Longitude': [-118.25, -118.24, -118.26, -118.23, -118.22],
-    'PropertyType': ['House','Condo','House','Condo','House'],
-    'Bedrooms': [3,2,4,2,5]
-})
+# --- Market Climate Colors ---
+market_color = {
+    "Hot Market 🔥": "#ffcccc",
+    "Stable Market 🌤": "#ccffcc",
+    "Cooling Market ❄️": "#cce0ff",
+    "No Data": "#f0f0f0"
+}
+climate_text = "Hot Market 🔥"  # Default
 
-# ----------------------
-# Layout
-# ----------------------
+# --- Stats Cards Function ---
+def create_stats_cards(pred_price=500000, avg_price=450000, max_price=1200000,
+                       min_price=250000, climate=climate_text, land_avm=None):
+    cards = [
+        html.Div(f"Predicted Price: ${pred_price:,} 🏠", title="AI-generated Automated Valuation Model", className="stat-card"),
+        html.Div(f"Avg Price: ${avg_price:,} 📊", title="Average price of selected properties", className="stat-card"),
+        html.Div(f"Max Price: ${max_price:,} 💰", title="Most expensive property", className="stat-card"),
+        html.Div(f"Min Price: ${min_price:,} 🏷", title="Least expensive property", className="stat-card"),
+        html.Div(f"Market Climate: {climate}", title="Local market conditions", 
+                 className="stat-card", style={"backgroundColor": market_color.get(climate, "#f0f0f0")})
+    ]
+    if land_avm is not None:
+        cards.append(html.Div(f"Raw Land AVM: ${land_avm:,.0f}", 
+                              title="Predicted land value based on size, shape, wetlands, zoning", className="stat-card"))
+    return html.Div(cards, style={
+        'display': 'flex', 
+        'gap': '15px', 
+        'flexWrap': 'wrap', 
+        'justifyContent': 'center',
+        'marginBottom': '20px'
+    })
+
+# --- Filters Example ---
+filters = html.Div([
+    html.Div(dcc.Dropdown(options=[{'label': 'Option 1', 'value': '1'}], placeholder="Filter 1"), style={'flex': '1', 'minWidth': '180px'}),
+    html.Div(dcc.Dropdown(options=[{'label': 'Option 2', 'value': '2'}], placeholder="Filter 2"), style={'flex': '1', 'minWidth': '180px'}),
+    html.Div(dcc.Dropdown(options=[{'label': 'Option 3', 'value': '3'}], placeholder="Filter 3"), style={'flex': '1', 'minWidth': '180px'}),
+    html.Div(dcc.Dropdown(options=[{'label': 'Option 4', 'value': '4'}], placeholder="Filter 4"), style={'flex': '1', 'minWidth': '180px'}),
+    html.Div(dcc.Dropdown(options=[{'label': 'Option 5', 'value': '5'}], placeholder="Filter 5"), style={'flex': '1', 'minWidth': '180px'})
+], style={'display': 'flex', 'gap': '20px', 'flexWrap': 'wrap', 'marginBottom': '20px'})
+
+# --- Graphs ---
+scatter_map = dcc.Graph(id='scatter-plot', style={'flex': '1', 'height': '600px'})
+price_hist = dcc.Graph(id='price-histogram', style={'flex': '1', 'height': '600px'})
+charts = html.Div([scatter_map, price_hist], style={'display': 'flex', 'gap': '20px', 'flexWrap': 'wrap'})
+
+# --- App Layout ---
 app.layout = html.Div([
-    # Header
+    html.Style("""
+        .stat-card {
+            border-radius: 10px;
+            box-shadow: 2px 2px 8px rgba(0,0,0,0.15);
+            padding: 20px;
+            min-width: 180px;
+            text-align: center;
+            background-color: #ffffff;
+            transition: transform 0.2s, box-shadow 0.2s;
+            cursor: default;
+        }
+        .stat-card:hover {
+            transform: translateY(-3px);
+            box-shadow: 4px 4px 12px rgba(0,0,0,0.25);
+        }
+    """),
+    html.H2("Real Estate & Raw Land Dashboard", style={'textAlign': 'center', 'marginBottom': '20px'}),
+    
+    # --- CSV Upload ---
+    dcc.Upload(
+        id='upload-data',
+        children=html.Div(['Drag and Drop CSV or ', html.A('Select Files')]),
+        style={
+            'width': '100%',
+            'height': '60px',
+            'lineHeight': '60px',
+            'borderWidth': '1px',
+            'borderStyle': 'dashed',
+            'borderRadius': '5px',
+            'textAlign': 'center',
+            'marginBottom': '20px'
+        },
+        multiple=False
+    ),
+    
+    # --- Stats Cards ---
+    html.Div(id='stats-cards', children=create_stats_cards()),
+    
+    # --- Filters ---
+    filters,
+    
+    # --- Charts ---
+    charts,
+    
+    # --- Raw Land AVM Inputs ---
     html.Div([
-        html.H1("AI Real Estate Valuation Dashboard", style={'margin':'0', 'fontSize':'24px'}),
+        html.H4("Compute Raw Land AVM"),
         html.Div([
-            html.Label("Theme:"),
-            dcc.RadioItems(
-                id="theme-radio",
-                options=[{"label": "Light", "value": "light"}, {"label": "Dark", "value": "dark"}],
-                value="light",
-                labelStyle={"display": "inline-block", "margin-right": "10px"}
-            )
-        ], style={'display':'inline-block', 'margin-left':'20px'}),
-        html.Div([
-            dcc.Upload(
-                id='upload-data',
-                children=html.Div(['Drag and Drop or ', html.A('Select CSV Files')]),
-                style={'display':'inline-block','padding':'6px 12px','margin-left':'20px',
-                       'borderWidth': '1px','borderStyle': 'dashed','borderRadius': '5px','cursor':'pointer'},
-                multiple=True
-            )
-        ], style={'display':'inline-block', 'margin-left':'20px'}),
-        html.Div([
-            html.Button("Download Filtered CSV", id="download-btn", n_clicks=0,
-                        style={'padding':'6px 12px', 'margin-left':'20px', 'cursor':'pointer'}),
-            dcc.Download(id="download-data")
-        ], style={'display':'inline-block'})
-    ], className='sticky-header'),
-
-    # Main content: filters + dashboard
-    html.Div([
-        # Filter panel
-        html.Div([
-            html.H4("Filters", style={'margin-bottom':'10px'}),
-            
-            html.Label("Price Range"),
-            dcc.RangeSlider(id='price-slider', min=df['Price'].min(), max=df['Price'].max(),
-                            step=1000, value=[df['Price'].min(), df['Price'].max()],
-                            tooltip={"placement": "bottom", "always_visible": True}),
-            
-            html.Label("Latitude Range", style={'margin-top':'20px'}),
-            dcc.RangeSlider(id='lat-slider', min=df['Latitude'].min(), max=df['Latitude'].max(),
-                            step=0.001, value=[df['Latitude'].min(), df['Latitude'].max()],
-                            tooltip={"placement": "bottom", "always_visible": True}),
-            
-            html.Label("Longitude Range", style={'margin-top':'20px'}),
-            dcc.RangeSlider(id='lon-slider', min=df['Longitude'].min(), max=df['Longitude'].max(),
-                            step=0.001, value=[df['Longitude'].min(), df['Longitude'].max()],
-                            tooltip={"placement": "bottom", "always_visible": True}),
-            
-            html.Label("Property Type", style={'margin-top':'20px'}),
-            dcc.Dropdown(
-                id='property-type-dropdown',
-                options=[{'label': t, 'value': t} for t in df['PropertyType'].unique()],
-                multi=True,
-                placeholder="Select property type"
-            ),
-            
-            html.Label("Bedrooms", style={'margin-top':'20px'}),
-            dcc.Dropdown(
-                id='bedrooms-dropdown',
-                options=[{'label': str(b), 'value': b} for b in sorted(df['Bedrooms'].unique())],
-                multi=True,
-                placeholder="Select number of bedrooms"
-            ),
-        ], className='filter-panel'),
-
-        # Dashboard row
-        html.Div([
-            html.Div(dcc.Graph(id='scatter-plot'), className='dashboard-col'),
-            html.Div(dcc.Graph(id='price-histogram'), className='dashboard-col'),
-            html.Div([
-                html.Div(id='stats-cards', style={'marginBottom':'20px'}),
-                html.H3("Prediction History"),
-                dcc.Graph(id='prediction-history-graph')
-            ], className='dashboard-col')
-        ], className='dashboard-row')
-    ], className='main-container', style={'display':'flex', 'flexWrap':'wrap', 'gap':'20px'}),
-
-    # Hidden storage for prediction history
-    dcc.Store(id='prediction-history', data=[])
+            dcc.Input(id='parcel-size', type='number', placeholder='Size (acres)'),
+            dcc.Input(id='wetlands', type='number', placeholder='Wetlands %'),
+            dcc.Dropdown(id='shape', options=[
+                {'label': 'Regular', 'value': 'regular'},
+                {'label': 'Irregular', 'value': 'irregular'},
+                {'label': 'Odd', 'value': 'odd'}
+            ], placeholder='Parcel Shape'),
+            dcc.Input(id='zoning', type='text', placeholder='Current Zoning'),
+            dcc.Input(id='potential-zoning', type='text', placeholder='Potential Zoning'),
+            html.Button('Compute Land AVM', id='compute-avm', n_clicks=0)
+        ], style={'display':'flex', 'gap':'10px', 'flexWrap':'wrap', 'marginBottom':'10px'}),
+        html.Div(id='land-avm-output', style={'fontWeight':'bold', 'marginTop':'10px'})
+    ])
 ])
 
-# ----------------------
-# CSV parser
-# ----------------------
-def parse_contents(contents, filename):
+# --- CSV Parsing ---
+def parse_contents(contents):
     content_type, content_string = contents.split(',')
-    decoded = base64.b64decode(content_string)
+    decoded = io.BytesIO(base64.b64decode(content_string))
     try:
-        if filename.endswith('.csv'):
-            return pd.read_csv(StringIO(decoded.decode('utf-8')))
-        else:
-            return pd.DataFrame()
+        df = pd.read_csv(decoded)
+        return df
     except Exception as e:
-        print(f"Error parsing {filename}: {e}")
+        print(e)
         return pd.DataFrame()
 
-# ----------------------
-# Dashboard callback
-# ----------------------
+# --- Callbacks for Map, Histogram, Stats Cards ---
 @app.callback(
     Output('scatter-plot', 'figure'),
     Output('price-histogram', 'figure'),
     Output('stats-cards', 'children'),
-    Output('prediction-history', 'data'),
     Input('upload-data', 'contents'),
-    Input('upload-data', 'filename'),
-    Input('theme-radio', 'value'),
-    Input('price-slider', 'value'),
-    Input('lat-slider', 'value'),
-    Input('lon-slider', 'value'),
-    Input('property-type-dropdown', 'value'),
-    Input('bedrooms-dropdown', 'value'),
-    State('prediction-history', 'data')
+    State('parcel-size', 'value'),
+    State('wetlands', 'value'),
+    State('shape', 'value'),
+    State('zoning', 'value'),
+    State('potential-zoning', 'value'),
 )
-def update_dashboard(contents, filenames, theme, price_range, lat_range, lon_range, property_types, bedrooms, history):
-    global df
-    # Append uploaded CSVs
-    if contents:
-        df_list = [parse_contents(c, f) for c, f in zip(contents, filenames)]
-        uploaded_df = pd.concat(df_list, ignore_index=True)
-        df = pd.concat([df, uploaded_df], ignore_index=True)
+def update_graphs(contents, size, wetlands, shape, zoning, potential_zoning):
+    # --- Property Data ---
+    if contents is None:
+        df = pd.DataFrame({
+            "lat": [30.3, 30.4, 30.5],
+            "lon": [-81.6, -81.7, -81.8],
+            "price": [450000, 500000, 600000]
+        })
+    else:
+        df = parse_contents(contents)
+        if df.empty or not all(col in df.columns for col in ["lat", "lon", "price"]):
+            df = pd.DataFrame({
+                "lat": [30.3, 30.4, 30.5],
+                "lon": [-81.6, -81.7, -81.8],
+                "price": [450000, 500000, 600000]
+            })
+    
+    # --- Property Stats ---
+    pred_price = int(df['price'].mean() * 1.05)
+    avg_price = int(df['price'].mean())
+    max_price = int(df['price'].max())
+    min_price = int(df['price'].min())
+    
+    # --- Raw Land AVM ---
+    land_avm = None
+    if size is not None:
+        base_rate = 50000
+        shape_factor = {'regular':1.0, 'irregular':0.95, 'odd':0.9}.get(shape,1)
+        wetland_factor = max(0, 1 - (wetlands or 0)/100)
+        zoning_factor = 1.0
+        potential_factor = 1.05 if potential_zoning else 1.0
+        land_avm = size * base_rate * shape_factor * wetland_factor * zoning_factor * potential_factor
+    
+    # --- Stats Cards ---
+    stats_cards_updated = create_stats_cards(pred_price, avg_price, max_price, min_price, climate_text, land_avm)
+    
+    # --- Scatter Map ---
+    scatter_fig = px.scatter_mapbox(df, lat="lat", lon="lon", color="price", size="price", zoom=10,
+                                    mapbox_style="open-street-map",
+                                    color_continuous_scale=px.colors.sequential.Viridis)
+    scatter_fig.update_traces(marker=dict(size=12, opacity=0.8), selector=dict(mode='markers'))
 
-    # Filter dataset
-    filtered_df = df[
-        (df['Price'] >= price_range[0]) & (df['Price'] <= price_range[1]) &
-        (df['Latitude'] >= lat_range[0]) & (df['Latitude'] <= lat_range[1]) &
-        (df['Longitude'] >= lon_range[0]) & (df['Longitude'] <= lon_range[1])
-    ]
-    if property_types:
-        filtered_df = filtered_df[filtered_df['PropertyType'].isin(property_types)]
-    if bedrooms:
-        filtered_df = filtered_df[filtered_df['Bedrooms'].isin(bedrooms)]
+    # --- Histogram ---
+    hist_fig = px.histogram(df, x="price", nbins=10, color="price",
+                            color_continuous_scale='Blues', text_auto=True)
+    hist_fig.update_layout(xaxis_title="Price", yaxis_title="Count")
+    
+    return scatter_fig, hist_fig, stats_cards_updated
 
-    # Dummy prediction
-    predicted_price = int(filtered_df['Price'].mean()) if not filtered_df.empty else 0
-    avg_price = int(filtered_df['Price'].mean()) if not filtered_df.empty else 0
-    max_price = int(filtered_df['Price'].max()) if not filtered_df.empty else 0
-    min_price = int(filtered_df['Price'].min()) if not filtered_df.empty else 0
-
-    # Update prediction history
-    history.append({'time': str(pd.Timestamp.now()), 'price': predicted_price})
-    if len(history) > 10:
-        history = history[-10:]
-
-    # Stats cards
-    cards = html.Div([
-        html.Div(f"Predicted Price: ${predicted_price:,}", className="stat-card"),
-        html.Div(f"Avg Price: ${avg_price:,}", className="stat-card"),
-        html.Div(f"Max Price: ${max_price:,}", className="stat-card"),
-        html.Div(f"Min Price: ${min_price:,}", className="stat-card")
-    ], style={'display':'flex','flexWrap':'wrap','gap':'10px'})
-
-    # Scatter plot with map overlay
-    scatter_fig = go.Figure(go.Scattermapbox(
-        lat=filtered_df['Latitude'],
-        lon=filtered_df['Longitude'],
-        mode='markers',
-        marker=go.scattermapbox.Marker(size=12, color='blue'),
-        text=filtered_df.apply(lambda r: f"Price: ${r['Price']}\nBedrooms: {r['Bedrooms']}\nType: {r['PropertyType']}", axis=1)
-    ))
-    scatter_fig.update_layout(
-        mapbox_style="open-street-map",
-        mapbox_zoom=10,
-        mapbox_center={"lat": filtered_df['Latitude'].mean() if not filtered_df.empty else 34.05,
-                       "lon": filtered_df['Longitude'].mean() if not filtered_df.empty else -118.25},
-        margin={"l":0,"r":0,"t":30,"b":0},
-        title="Property Locations (Map Overlay)"
-    )
-
-    # Histogram
-    hist_fig = go.Figure(go.Histogram(x=filtered_df['Price'], nbinsx=20, name='Price'))
-    hist_fig.add_trace(go.Scatter(
-        x=[predicted_price, predicted_price],
-        y=[0, filtered_df['Price'].value_counts().max() if not filtered_df.empty else 0],
-        mode='lines', line=dict(color='red', width=2), name='Predicted Price'
-    ))
-    hist_fig.update_layout(title="Price Distribution", transition={'duration':500,'easing':'cubic-in-out'})
-
-    return scatter_fig, hist_fig, cards, history
-
-# ----------------------
-# Download callback
-# ----------------------
+# --- Callback for Land AVM Button (updates dynamically) ---
 @app.callback(
-    Output("download-data", "data"),
-    Input("download-btn", "n_clicks"),
-    prevent_initial_call=True
+    Output('land-avm-output', 'children'),
+    Input('compute-avm', 'n_clicks'),
+    State('parcel-size', 'value'),
+    State('wetlands', 'value'),
+    State('shape', 'value'),
+    State('zoning', 'value'),
+    State('potential-zoning', 'value')
 )
-def download_filtered(n_clicks):
-    global df
-    return dcc.send_data_frame(df.to_csv, "filtered_real_estate_data.csv", index=False)
+def compute_land_avm(n_clicks, size, wetlands, shape, zoning, potential_zoning):
+    if n_clicks is None or size is None:
+        return ""
+    base_rate = 50000
+    shape_factor = {'regular':1.0, 'irregular':0.95, 'odd':0.9}.get(shape,1)
+    wetland_factor = max(0, 1 - (wetlands or 0)/100)
+    zoning_factor = 1.0
+    potential_factor = 1.05 if potential_zoning else 1.0
+    predicted_value = size * base_rate * shape_factor * wetland_factor * zoning_factor * potential_factor
+    return f"Predicted Land Value: ${predicted_value:,.0f} (±3% margin)"
 
-# ----------------------
-# Run server
-# ----------------------
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8050))
-    app.run_server(host="0.0.0.0", port=port, debug=True)
+# --- Run App ---
+if __name__ == '__main__':
+    app.run_server(debug=True)
