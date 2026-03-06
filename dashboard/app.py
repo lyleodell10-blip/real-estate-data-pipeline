@@ -32,6 +32,7 @@ def predict_price(lat, lon, bedrooms=None, bathrooms=None, sqft=None, property_t
 # Initialize Dash app
 # ------------------------------
 app = dash.Dash(__name__)
+server = app.server # <-- THIS IS REQUIRED FOR Render/Gunicorn
 app.title = "Interactive AI Valuation Dashboard"
 
 # ------------------------------
@@ -186,5 +187,6 @@ def download_charts(n_clicks, scatter_fig, hist_fig):
 # Run server (Render-ready)
 # ------------------------------
 if __name__ == "__main__":
+    import os
     port = int(os.environ.get("PORT", 8050))  # Render assigns the port
     app.run_server(host="0.0.0.0", port=port, debug=True)
