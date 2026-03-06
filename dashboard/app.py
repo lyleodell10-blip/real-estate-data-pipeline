@@ -167,3 +167,6 @@ def predict_price(n_clicks, grlivarea, lotarea, overallqual, yearbuilt):
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
+
+# Expose server for Gunicorn
+server = app.server
