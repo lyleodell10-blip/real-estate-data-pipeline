@@ -1,172 +1,105 @@
-import dash
-from dash import dcc, html
-from dash.dependencies import Input, Output, State
-import joblib
+# dashboard/app.py
 import pandas as pd
-import plotly.express as px
+import joblib
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestRegressor
 
-# Load dataset
+import dash
+from dash import dcc, html, Input, Output
+import plotly.express as px
+import dash_bootstrap_components as dbc
+
+# -----------------------------
+# Load data
+# -----------------------------
 df = pd.read_csv("real_estate_data.csv")
 
-# Load trained ML model
-model = joblib.load("ml_models/price_model.pkl")
+# -----------------------------
+# Train model (or load existing)
+# -----------------------------
+try:
+    model = joblib.load("ml_models/price_model.pkl")
+except:
+    features = ["GrLivArea", "LotArea", "OverallQual", "YearBuilt"]
+    target = "SalePrice"
+    X = df[features]
+    y = df[target]
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
+    model = RandomForestRegressor(n_estimators=200)
+    model.fit(X_train, y_train)
+    joblib.dump(model, "ml_models/price_model.pkl")
 
-features = ["GrLivArea", "LotArea", "OverallQual", "YearBuilt"]
+# -----------------------------
+# Dash app setup
+# -----------------------------
+app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
 
-# Feature importance chart
-importance_df = pd.DataFrame({
-    "Feature": features,
-    "Importance": model.feature_importances_
-})
+app.layout = dbc.Container([
+    html.H1("Real Estate Price Dashboard"),
+    html.Hr(),
 
-importance_fig = px.bar(
-    importance_df,
-    x="Feature",
-    y="Importance",
-    title="Feature Importance for House Price Prediction"
-)
+    dbc.Row([
+        dbc.Col([
+            html.Label("Above Ground Living Area (sq ft)"),
+            dcc.Input(id="GrLivArea", type="number", value=1500),
+            html.Br(),
 
-# Price distribution
-price_hist = px.histogram(
-    df,
-    x="SalePrice",
-    nbins=40,
-    title="House Price Distribution"
-)
+            html.Label("Lot Area (sq ft)"),
+            dcc.Input(id="LotArea", type="number", value=5000),
+            html.Br(),
 
-# Living area vs price
-scatter_fig = px.scatter(
-    df,
-    x="GrLivArea",
-    y="SalePrice",
-    title="Living Area vs House Price",
-)
+            html.Label("Overall Quality (1-10)"),
+            dcc.Input(id="OverallQual", type="number", value=5),
+            html.Br(),
 
-# Average price by quality
-quality_df = df.groupby("OverallQual")["SalePrice"].mean().reset_index()
+            html.Label("Year Built"),
+            dcc.Input(id="YearBuilt", type="number", value=2000),
+            html.Br(),
 
-quality_fig = px.bar(
-    quality_df,
-    x="OverallQual",
-    y="SalePrice",
-    title="Average House Price by Quality"
-)
+            html.Br(),
+            html.Button("Predict Price", id="predict-button", n_clicks=0),
+            html.H4(id="prediction-output")
+        ], width=4),
 
-# Initialize Dash app
-app = dash.Dash(__name__)
+        dbc.Col([
+            dcc.Graph(
+                id="scatter-plot",
+                figure=px.scatter(
+                    df,
+                    x="GrLivArea",
+                    y="SalePrice",
+                    color="OverallQual",
+                    trendline="ols",
+                    title="GrLivArea vs SalePrice"
+                )
+            )
+        ], width=8)
+    ])
+], fluid=True)
 
-app.layout = html.Div([
-
-    html.H1("Real Estate Analytics & AI Valuation Dashboard"),
-
-    html.H2("Market Analysis"),
-
-    dcc.Graph(figure=price_hist),
-
-    dcc.Graph(figure=scatter_fig),
-
-    dcc.Graph(figure=quality_fig),
-
-    html.H2("AI Home Price Predictor"),
-
-    html.Div([
-
-        dcc.Input(
-            id="grlivarea",
-            type="number",
-            placeholder="Living Area (sqft)",
-            style={"margin": "10px"}
-        ),
-
-        dcc.Input(
-            id="lotarea",
-            type="number",
-            placeholder="Lot Area",
-            style={"margin": "10px"}
-        ),
-
-        dcc.Input(
-            id="overallqual",
-            type="number",
-            placeholder="Quality (1-10)",
-            style={"margin": "10px"}
-        ),
-
-        dcc.Input(
-            id="yearbuilt",
-            type="number",
-            placeholder="Year Built",
-            style={"margin": "10px"}
-        ),
-
-    ]),
-
-    html.Button(
-        "Predict Price",
-        id="predict_button",
-        n_clicks=0,
-        style={"margin": "20px"}
-    ),
-
-    html.H3(id="prediction_output"),
-
-    html.H2("Prediction Visualization"),
-
-    dcc.Graph(id="prediction_graph"),
-
-    html.H2("Model Insights"),
-
-    dcc.Graph(figure=importance_fig)
-
-])
-
-
+# -----------------------------
+# Callbacks
+# -----------------------------
 @app.callback(
-    Output("prediction_output", "children"),
-    Output("prediction_graph", "figure"),
-    Input("predict_button", "n_clicks"),
-    State("grlivarea", "value"),
-    State("lotarea", "value"),
-    State("overallqual", "value"),
-    State("yearbuilt", "value")
+    Output("prediction-output", "children"),
+    Input("predict-button", "n_clicks"),
+    Input("GrLivArea", "value"),
+    Input("LotArea", "value"),
+    Input("OverallQual", "value"),
+    Input("YearBuilt", "value")
 )
-def predict_price(n_clicks, grlivarea, lotarea, overallqual, yearbuilt):
-
+def predict_price(n_clicks, gr_liv, lot, qual, year):
     if n_clicks == 0:
-        return "", {}
+        return ""
+    features = [[gr_liv, lot, qual, year]]
+    pred = model.predict(features)[0]
+    return f"Predicted Sale Price: ${pred:,.0f}"
 
-    if None in [grlivarea, lotarea, overallqual, yearbuilt]:
-        return "Please enter all house details.", {}
-
-    input_data = [[grlivarea, lotarea, overallqual, yearbuilt]]
-
-    prediction = model.predict(input_data)[0]
-
-    lower = prediction * 0.9
-    upper = prediction * 1.1
-
-    prediction_text = (
-        f"Estimated House Price: ${prediction:,.0f} "
-        f"(Range: ${lower:,.0f} - ${upper:,.0f})"
-    )
-
-    graph_df = pd.DataFrame({
-        "Estimate": ["Low", "Predicted", "High"],
-        "Price": [lower, prediction, upper]
-    })
-
-    fig = px.bar(
-        graph_df,
-        x="Estimate",
-        y="Price",
-        title="AI Price Prediction Range"
-    )
-
-    return prediction_text, fig
-
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
-
+# -----------------------------
 # Expose server for Gunicorn
+# -----------------------------
 server = app.server
+
+# Optional: run locally
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=10000, debug=True)
